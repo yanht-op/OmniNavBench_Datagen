@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
-from pxr import Semantics, Usd, UsdGeom
 
 from datagen.config import RobotConfig
 
@@ -50,6 +49,7 @@ class ObjectRegistry:
             _log_info(f"[Registry] Built with {len(self._objects)} external objects.")
             return
         
+        from pxr import Usd, UsdGeom
         # Traverse all prims
         # Use Usd.PrimRange for efficient traversal
         bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"])
@@ -110,6 +110,7 @@ class ObjectRegistry:
 
     def _get_semantic_label(self, prim) -> Optional[str]:
         """Retrieves semantic class label if present using SemanticsAPI."""
+        from pxr import Semantics
         # Isaac Sim convention: SemanticsAPI instance name "Semantics" with:
         # - semanticType="class"
         # - semanticData="Chair"

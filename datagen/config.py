@@ -25,6 +25,7 @@ class CaptureConfig:
     """Configuration for execution and sensor capture."""
 
     fps: float = 30.0
+    save_raw_depth: bool = True
     keyframe_interval_s: float = 0.5
     track_kp_pos: float = 2.0
     track_kp_yaw: float = 3.0
@@ -84,6 +85,9 @@ class TaskConfig:
     """Configuration for task sampling."""
     types: List[str]  # e.g., ["VLN", "Follow"]
     chain_length: int = 1
+    distinct_object_targets: bool = False
+    distinct_object_categories: bool = False
+    require_full_chain: bool = False
     num_episodes: int = 10
     final_goal_threshold_m: float = 0.1
     pointnav_steps: int = 4
@@ -96,9 +100,14 @@ class TaskConfig:
     object_start_min_dist_m: float = 0.0  # min XY distance from random ObjectNav start to target center
     random_start: bool = False      # randomise start position on navmesh each episode
     start_min_dist_m: float = 3.0  # min Euclidean distance between any two episode starts
+    sample_endpoints: bool = False
+    path_min_m: float = 2.0
+    path_max_m: float = 10.0
+    endpoint_attempts: int = 100
 
 @dataclass
 class PipelineConfig:
+    enable_room_zoning: bool = True
     """Global configuration for the data generation pipeline."""
     output_dir: Path
     navmesh: NavMeshConfig

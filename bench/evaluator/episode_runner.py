@@ -1,6 +1,7 @@
 # pyright: reportMissingImports=false
 
 """Episode runner for single episode evaluation."""
+# EpisodeRunner 负责单个 episode 的循环：获取观测、调用策略、执行动作、记录轨迹、判断结束。
 
 from __future__ import annotations
 

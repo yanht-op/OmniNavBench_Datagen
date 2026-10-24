@@ -1,4 +1,8 @@
 """Policy interface for VLM-style navigation."""
+# base.py 定义三个核心对象：
+# Observation  # 图像、深度、机器人状态、语言指令等输入
+# Action       # 速度、离散动作、停止标记等输出
+# BasePolicy   # 策略接口，核心方法为 act(observation)
 
 from __future__ import annotations
 

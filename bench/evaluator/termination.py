@@ -1,4 +1,5 @@
 """Termination conditions for episode evaluation."""
+# termination.py 管理结束条件；runtime_limits.py 管理任务时间预算；eqa_runtime.py 管理问答能力的显式启用与调用。
 
 from __future__ import annotations
 

@@ -177,6 +177,8 @@ class ChainSampler:
         task_types: Optional[List[str]] = None,
         *,
         start_pos: np.ndarray,
+        distinct_object_targets: bool = False,
+        distinct_object_categories: bool = False,
         virtual_humans: Optional[VirtualHumansContext] = None,
         min_clearance: Optional[float] = None,
         grid_size: Optional[float] = None,
@@ -204,6 +206,8 @@ class ChainSampler:
             f"start=({float(start[0]):.2f}, {float(start[1]):.2f}, {float(start[2]):.2f})"
         )
         current_start_pos = start
+        used_object_ids = set()
+        used_categories = set()
         for i in range(chain_length):
             t_type = str(task_types[i % len(task_types)])
             _log_info(
@@ -211,10 +215,15 @@ class ChainSampler:
                 f"index={i} task_type={t_type} "
                 f"start=({float(current_start_pos[0]):.2f}, {float(current_start_pos[1]):.2f}, {float(current_start_pos[2]):.2f})"
             )
+            candidates = [obj for obj in all_objects if not distinct_object_targets or obj.object_id not in used_object_ids]
+            if distinct_object_categories:
+                candidates = [obj for obj in candidates if str(obj.category).lower() not in used_categories]
+            if str(t_type).strip().lower() in _OBJECT_TASK_TYPES and not candidates:
+                break
             node = self._sample_segment(
                 current_start_pos,
                 t_type,
-                all_objects,
+                candidates,
                 virtual_humans=virtual_humans,
                 min_clearance=min_clearance,
                 grid_size=grid_size,
@@ -236,6 +245,9 @@ class ChainSampler:
                 f"path_points={len(node.path_points)}"
             )
             chain.nodes.append(node)
+            if node.target_object is not None:
+                used_object_ids.add(node.target_object.object_id)
+                used_categories.add(str(node.target_object.category).lower())
             current_start_pos = node.end_pos
 
         if not chain.nodes:

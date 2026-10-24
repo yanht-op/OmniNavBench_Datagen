@@ -126,7 +126,7 @@ class ScenarioRef:
         """
         return f"{self.scenario_id}:{self.source_envset_path}"
 
-
+# BenchRunner 负责加载任务、按场景组织执行、管理仿真生命周期和汇总结果。
 class BenchRunner:
     """Runs batch benchmark evaluation across multiple scenarios.
 

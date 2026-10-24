@@ -1,4 +1,5 @@
 """Offline test evaluator for submitted navigation trajectories."""
+# offline_test.py 是理解最终评分口径的关键入口。它读取结果轨迹和带 GT 的标注进行评分。
 
 from __future__ import annotations
 

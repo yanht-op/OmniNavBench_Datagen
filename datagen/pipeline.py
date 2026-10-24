@@ -228,9 +228,12 @@ class DataGenerationPipeline:
 
         print("[datagen.pipeline] creating RoomZoning", flush=True)
         self._room_zoning = RoomZoning(self._geometry, self._registry)
-        print("[datagen.pipeline] computing room zones", flush=True)
-        self._room_zoning.compute_zones()
-        print("[datagen.pipeline] room zones computed", flush=True)
+        if self._cfg.enable_room_zoning:
+            print("[datagen.pipeline] computing room zones", flush=True)
+            self._room_zoning.compute_zones()
+            print("[datagen.pipeline] room zones computed", flush=True)
+        else:
+            print("[datagen.pipeline] room zoning skipped; using object category instructions", flush=True)
 
         _log_info("[DataGen] Phase 2/3: Initialize samplers")
         print("[datagen.pipeline] setting nav random seed", flush=True)
@@ -495,6 +498,7 @@ class DataGenerationPipeline:
 
         # C) Execute chain
         instruction: Optional[str] = None
+        object_segments: List[Dict[str, Any]] = []
         last_target: Optional[Dict[str, Any]] = None
         follow_payload: Optional[Dict[str, Any]] = None
         eqa_payload: Optional[Dict[str, Any]] = None
@@ -526,21 +530,39 @@ class DataGenerationPipeline:
 
         # A) Blueprinting
         vh_ctx = _build_virtual_humans_context(scenario)
-        chain: TaskChain = self._sampler.sample_chain(
-            chain_length=int(self._cfg.task.chain_length),
-            task_types=list(self._cfg.task.types),
-            start_pos=configured_start_pos,
-            virtual_humans=vh_ctx,
-            min_clearance=min_clearance_units,
-            grid_size=grid_size_units,
-            pointnav_steps=pointnav_steps,
-            pointnav_step_min=pointnav_step_min,
-            pointnav_step_max=pointnav_step_max,
-            pointnav_step_attempts=pointnav_step_attempts,
-            object_goal_min=object_goal_min,
-            object_goal_max=object_goal_max,
-            object_start_min_dist=object_start_min_dist,
-        )
+        if self._cfg.task.sample_endpoints:
+            from datagen.generation.endpoints import sample_endpoint_path
+            from datagen.generation.blueprint import TaskNode
+            endpoint_path, _ = sample_endpoint_path(
+                self._geometry, configured_start_pos, units=units_in_meters,
+                min_length_m=self._cfg.task.path_min_m, max_length_m=self._cfg.task.path_max_m,
+                attempts=self._cfg.task.endpoint_attempts,
+                min_clearance_m=self._cfg.navmesh.min_clearance_m or 0.0,
+            )
+            chain = TaskChain(nodes=[TaskNode(
+                task_type="PointNav", start_pos=np.asarray(configured_start_pos),
+                end_pos=endpoint_path[-1], path_points=endpoint_path,
+            )])
+        else:
+            chain: TaskChain = self._sampler.sample_chain(
+                chain_length=int(self._cfg.task.chain_length),
+                task_types=list(self._cfg.task.types),
+                start_pos=configured_start_pos,
+                distinct_object_targets=self._cfg.task.distinct_object_targets,
+                distinct_object_categories=self._cfg.task.distinct_object_categories,
+                virtual_humans=vh_ctx,
+                min_clearance=min_clearance_units,
+                grid_size=grid_size_units,
+                pointnav_steps=pointnav_steps,
+                pointnav_step_min=pointnav_step_min,
+                pointnav_step_max=pointnav_step_max,
+                pointnav_step_attempts=pointnav_step_attempts,
+                object_goal_min=object_goal_min,
+                object_goal_max=object_goal_max,
+                object_start_min_dist=object_start_min_dist,
+            )
+        if self._cfg.task.require_full_chain and len(chain.nodes) != self._cfg.task.chain_length:
+            raise RuntimeError(f"Requested {self._cfg.task.chain_length} tasks but sampled {len(chain.nodes)}")
         if chain.nodes:
             first_target_payload = _target_to_payload(chain.nodes[0].target_object)
             if first_target_payload is not None:
@@ -569,6 +591,10 @@ class DataGenerationPipeline:
             if self._cfg.task.random_start:
                 if spawn_start_pos is not None and len(spawn_start_pos) >= 3:
                     z0 = float(spawn_start_pos[2])
+                    if self._geometry is not None:
+                        # Preserve spawn clearance above the floor when sampling another floor.
+                        original_floor = self._geometry.snap_point(spawn_start_pos)
+                        z0 += float(configured_start_pos[2]) - float(original_floor[2])
                 else:
                     z0 = float(z0_live)
             elif configured_start_pos is not None and len(configured_start_pos) >= 3:
@@ -805,7 +831,7 @@ class DataGenerationPipeline:
                         yaw_rad=float(rec_yaw),
                     )
 
-                visibility = {"frames_checked": 0, "max_pixels": 0}
+                visibility = {"frames_checked": 0, "max_pixels": 0, "last_pixels": 0}
                 evidence_frames: List[int] = []
                 evidence_capture_frames: List[int] = []
                 target_prim = getattr(node.target_object, "prim_path", None) if node.target_object else None
@@ -828,9 +854,15 @@ class DataGenerationPipeline:
                 allowed_set = {c for c in available_categories if c} if available_categories else None
 
                 def _on_capture(step_idx: int, frame_idx: int, elapsed_s: float, _camera_obj) -> None:
+                    if _camera_obj is not primary_camera:
+                        return
                     capture_frame = int(track_start_capture_frame) + int(frame_idx)
                     sampled_sim_step = int(track_start_sim_step) + int(step_idx) + 1
                     _record_robot_sample(capture_frame=int(capture_frame), sim_step=int(sampled_sim_step))
+                    if self._cfg.capture.save_raw_depth:
+                        from datagen.depth import save_depth_frame
+                        save_depth_frame(episode_dir / "video" / "depth_raw", capture_frame,
+                                         _camera_obj.get_distance_to_image_plane())
 
                     if (
                         collect_visual_keyframes
@@ -863,6 +895,7 @@ class DataGenerationPipeline:
                     if _ids:
                         saw_target_instance_id = True
                     visibility["frames_checked"] += 1
+                    visibility["last_pixels"] = int(pixels)
                     if int(pixels) > int(visibility["max_pixels"]):
                         visibility["max_pixels"] = int(pixels)
                     if (
@@ -1013,6 +1046,8 @@ class DataGenerationPipeline:
                             break
 
                         if finished:
+                            if dist_to_final_goal > float(final_goal_threshold_units):
+                                raise RuntimeError("Controller finished outside the required final goal tolerance")
                             _log_info(
                                 f"[DataGen] move_along_path finished at step={step_idx} "
                                 f"frame={actual_track_end_sim_step}"
@@ -1090,13 +1125,28 @@ class DataGenerationPipeline:
                                     f"final face-target rotation did not finish within max_steps={max_rotate_steps}"
                                 )
 
+                # Always record the final pose, even when the last control step fell between video ticks.
+                if task_type_norm not in {"follow", "follow_human", "followhuman"} and not capture:
+                    replay._capture_frame_group(
+                        cameras=cameras, camera_outputs=camera_outputs, frame_idx=frame_idx,
+                        step_idx=executed_step_idx, elapsed=elapsed, on_capture=_on_capture,
+                        video_writer=video_writer, robot=robot,
+                    )
                 node_gt_path = node_waypoint_recorder.build()
                 if not node_gt_path:
                     raise RuntimeError(f"Task node {node_idx} produced no captured recording samples")
+                if captured_gt_path:
+                    prev = captured_gt_path[-1]
+                    gap = float(np.linalg.norm(
+                        (np.asarray(node_gt_path[0]["xyz"]) - np.asarray(prev["xyz"]))[:2]))
+                    node_gt_path[0]["distance_xy"] = gap
+                    offset = float(prev["distance_total_xy"]) + gap
+                    for point in node_gt_path:
+                        point["distance_total_xy"] += offset
                 captured_gt_path.extend(node_gt_path)
                 last_recorded_waypoint = node_gt_path[-1]
                 capture_frame_offset = int(last_recorded_waypoint["frame"]) + 1
-                sim_step_offset = int(last_recorded_waypoint.get("sim_step", track_start_sim_step))
+                sim_step_offset = int(actual_track_end_sim_step)
 
                 if self._cfg.strict_instance_id_prim_path and self._cfg.min_pixels_visible and target_prim:
                     # Fail-fast: if we never observed any instance id for the target prim, prim-path mapping is broken
@@ -1186,6 +1236,8 @@ class DataGenerationPipeline:
                     }
 
                 if self._cfg.min_pixels_visible and target_prim:
+                    if task_type_norm in {"objectnav", "objnav"} and visibility["last_pixels"] < self._cfg.min_pixels_visible:
+                        raise RuntimeError("ObjectNav target not visible in the final subtask frame")
                     if visibility["frames_checked"] <= 0:
                         raise RuntimeError("Visibility check enabled but no capture frames were checked")
                     if int(visibility["max_pixels"]) < int(self._cfg.min_pixels_visible):
@@ -1251,6 +1303,12 @@ class DataGenerationPipeline:
                     else:
                         generator = TemplateGenerator()
                     instruction = generator.generate([str(p) for p in keyframes], ctx)
+                    if self._cfg.task.sample_endpoints:
+                        from datagen.generation.endpoints import route_instruction
+                        instruction = route_instruction(
+                            node.path_points, float(np.deg2rad(start_pose_payload["orientation_deg"])),
+                            units_in_meters,
+                        )
 
                     if task_type_norm == "vln":
                         vln_payload = {
@@ -1277,6 +1335,17 @@ class DataGenerationPipeline:
                         "room_name": target_room_name,
                         "visibility": visibility,
                     }
+                    if task_type_norm in {"objectnav", "objnav"}:
+                        object_segments.append({
+                            "step": node_idx, "target": dict(last_target), "instruction": instruction,
+                            "start_capture_frame": track_start_capture_frame,
+                            "end_capture_frame": int(last_recorded_waypoint["frame"]),
+                            "start_time_s": float(node_gt_path[0]["time_s"]),
+                            "end_time_s": float(last_recorded_waypoint["time_s"]),
+                            "planned_goal": [float(v) for v in node.end_pos],
+                            "achieved_position": list(last_recorded_waypoint["xyz"]),
+                            "planned_path": [p.tolist() if hasattr(p, "tolist") else list(p) for p in node.path_points],
+                        })
         finally:
             video_writer.close()
             if temp_keyframe_root.exists():
@@ -1287,10 +1356,19 @@ class DataGenerationPipeline:
                 except Exception as exc:
                     _log_warn(f"[DataGen] seg_cam.cleanup failed: {exc}")
 
+        if len(object_segments) == len(chain.nodes) and len(object_segments) > 1:
+            instruction = " ".join(f"{i + 1}. {segment['instruction']}" for i, segment in enumerate(object_segments))
         recording_metadata: Dict[str, Any] = {
             "source": "datagen",
             "distance_threshold_xy": 0.0,
             "task_types": list(self._cfg.task.types),
+            "frame_axis": "zero_based_video_frame",
+            "time_axis": "simulation_seconds; use time_s rather than frame/fps",
+            "nominal_video_fps": float(self._cfg.capture.fps),
+            "raw_depth": bool(self._cfg.capture.save_raw_depth),
+            "requested_subtasks": int(self._cfg.task.chain_length),
+            "distinct_object_targets": bool(self._cfg.task.distinct_object_targets),
+            "distinct_object_categories": bool(self._cfg.task.distinct_object_categories),
         }
         if captured_gt_path:
             first_wp = captured_gt_path[0]
@@ -1320,7 +1398,14 @@ class DataGenerationPipeline:
                 "scenario_template_id": scenario_id,
                 "task_types": list(self._cfg.task.types),
                 "start_pose": start_pose_payload,
+                "endpoint_task": ({
+                    "start": [float(v) for v in chain.nodes[0].start_pos],
+                    "goal": [float(v) for v in chain.nodes[-1].end_pos],
+                    "planned_path": [[float(v) for v in p] for p in chain.nodes[0].path_points],
+                    "instruction_kind": "geometric_route",
+                } if self._cfg.task.sample_endpoints else None),
                 "target": last_target,
+                "object_segments": object_segments,
                 "follow": follow_payload,
                 "eqa": eqa_payload,
                 "vln": vln_payload,

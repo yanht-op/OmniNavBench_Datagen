@@ -81,6 +81,14 @@ class EpisodeExporter:
                 nav["goal_type"] = "object"
                 nav["goal_id"] = str(object_id)
         nav["objects"] = objects
+        endpoint_task = metadata.get("endpoint_task")
+        if isinstance(endpoint_task, dict):
+            nav["goal_position"] = endpoint_task["goal"]
+            nav["goal_type"] = "point"
+            nav.pop("goal_id", None)
+            task["subtasks"] = [{"type": "GOTO_POINT", "position": endpoint_task["goal"]}]
+            task["sub_instructions"] = [{"step": 0, "type": "PointNav", "text": episode.instruction}]
+            scenario["datagen_endpoint_task"] = endpoint_task
         if isinstance(target, dict):
             nav["objects_meta"] = {"target": target}
 
@@ -99,6 +107,17 @@ class EpisodeExporter:
             task["sub_instructions"] = [{"step": 0, "type": "VLN", "text": episode.instruction}]
 
         # FOLLOW/EQA payloads (optional)
+        segments = metadata.get("object_segments") or []
+        if segments:
+            nav["objects"] = {str(s["target"]["object_id"]): s["target"]["position"] for s in segments}
+            nav["objects_meta"] = {"targets": [s["target"] for s in segments]}
+            task["subtasks"] = [{"type": "GOTO_OBJECT", "object_id": str(s["target"]["object_id"])} for s in segments]
+            task["sub_instructions"] = [{"step": s["step"], "type": "OBJ", "text": s["instruction"],
+                                         "start_frame": s["start_capture_frame"], "end_frame": s["end_capture_frame"]}
+                                        for s in segments]
+            scenario["datagen_segments"] = segments
+            nav["goal_position"] = list(segments[-1]["achieved_position"])
+
         follow = (episode.metadata or {}).get("follow") if isinstance(episode.metadata, dict) else None
         if isinstance(follow, dict):
             vh = scenario.setdefault("virtual_humans", {})
@@ -169,6 +188,8 @@ class EpisodeExporter:
         if not isinstance(recording, dict):
             raise ValueError("GeneratedEpisode.recording must be populated before export")
         scenario[CANONICAL_RECORDING_KEY] = recording
+        # Retain the official train annotation field for existing training/scoring readers.
+        entries[0]["rb_gt_waypoints"] = copy.deepcopy(recording["gt_path"])
 
         envset = {"scenarios": [scenario]}
         out_path = episode_dir / "episode.json"
